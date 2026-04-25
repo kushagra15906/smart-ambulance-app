@@ -1,0 +1,24 @@
+# Smart Ambulance v5 — Python Dependencies
+# Run: pip install -r requirements.txt
+
+# ── Web Framework ─────────────────────────────────────────────────────────────
+flask==3.0.3
+flask-cors==4.0.1
+
+# ── HTTP Client (ESP32 communication) ────────────────────────────────────────
+requests==2.32.3
+
+# ── AI / Computer Vision ─────────────────────────────────────────────────────
+ultralytics          # YOLOv8 (auto-installs torch, torchvision)
+opencv-python        # OpenCV for camera capture
+
+# ── Machine Learning ─────────────────────────────────────────────────────────
+scikit-learn         # Random Forest, Linear Regression, pipelines
+numpy                # Array operations
+
+# ── Optional (for faster inference) ──────────────────────────────────────────
+# torch               # already installed by ultralytics
+# Pillow              # already installed by ultralytics
+Flask
+gunicorn
+requests

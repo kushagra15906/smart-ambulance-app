@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Smart Ambulance Dashboard</title>
+  <meta http-equiv="refresh" content="3">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: monospace; }
+    body { background: #070b14; color: #ebf0ff; padding: 20px; }
+
+    h1 { color: #ff3b3b; letter-spacing: 3px; margin-bottom: 20px; font-size: 20px; }
+    h2 { color: #00d4ff; font-size: 14px; letter-spacing: 2px; margin-bottom: 12px; }
+
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+
+    .card {
+      background: #0f1724;
+      border: 0.5px solid #1e2d45;
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .signal-name { font-size: 18px; font-weight: bold; color: #ebf0ff; }
+    .signal-count { font-size: 28px; font-weight: bold; margin: 6px 0; }
+    .signal-label { font-size: 11px; letter-spacing: 1px; }
+
+    .LOW      { color: #00e676; }
+    .MEDIUM   { color: #ffbb00; }
+    .HIGH     { color: #ff6d00; }
+    .CRITICAL { color: #ff3b3b; }
+
+    .green-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #00e676;
+      box-shadow: 0 0 8px #00e676;
+      margin-right: 6px;
+    }
+    .gray-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #3a4f6e;
+      margin-right: 6px;
+    }
+
+    .route-box {
+      background: #0f1724;
+      border: 0.5px solid #ff3b3b44;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    .route-path {
+      color: #ff3b3b;
+      font-size: 16px;
+      font-weight: bold;
+      margin-top: 8px;
+      letter-spacing: 1px;
+    }
+
+    .amb-box {
+      background: #0f1724;
+      border: 0.5px solid #1e2d45;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .amb-item { flex: 1; min-width: 140px; }
+    .amb-label { color: #3a4f6e; font-size: 11px; letter-spacing: 1px; }
+    .amb-value { color: #ebf0ff; font-size: 14px; font-weight: bold; margin-top: 4px; }
+
+    .active-status { color: #ff3b3b; }
+    .inactive-status { color: #3a4f6e; }
+
+    .footer { color: #3a4f6e; font-size: 11px; margin-top: 20px; }
+
+    .btn {
+      background: #ff3b3b22;
+      border: 0.5px solid #ff3b3b66;
+      color: #ff3b3b;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 13px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      margin-right: 8px;
+      margin-bottom: 12px;
+    }
+    .btn:hover { background: #ff3b3b44; }
+
+    .btn-cyan {
+      background: #00d4ff12;
+      border-color: #00d4ff44;
+      color: #00d4ff;
+    }
+    .btn-cyan:hover { background: #00d4ff22; }
+
+    .error { color: #ff3b3b; font-size: 12px; margin-top: 8px; }
+    .success { color: #00e676; font-size: 12px; margin-top: 8px; }
+    #msg { min-height: 20px; }
+  </style>
+</head>
+<body>
+
+  <h1>SMART AMBULANCE TRAFFIC SYSTEM</h1>
+
+  <!-- Manual Test Buttons -->
+  <div>
+    <button class="btn" onclick="sendActive()">SIMULATE AMBULANCE ACTIVE</button>
+    <button class="btn" onclick="sendInactive()">SIMULATE AMBULANCE INACTIVE</button>
+    <button class="btn btn-cyan" onclick="computeRoute()">COMPUTE ROUTE</button>
+  </div>
+  <div id="msg"></div>
+
+  <!-- Ambulance Status -->
+  <div class="route-box" id="amb-status">
+    <h2>AMBULANCE STATUS</h2>
+    <div class="amb-box" id="amb-details">Loading...</div>
+    <div class="route-path" id="route-display"></div>
+  </div>
+
+  <!-- Traffic Signals -->
+  <h2>TRAFFIC SIGNALS</h2>
+  <div class="grid" id="signals-grid">Loading...</div>
+
+  <div class="footer">
+    Auto-refreshes every 3 seconds &nbsp;|&nbsp; Flask: http://127.0.0.1:5000
+  </div>
+
+<script>
+  const BASE = "http://127.0.0.1:5000";
+
+  // Load status
+  async function loadStatus() {
+    try {
+      const r = await fetch(`${BASE}/status`);
+      const d = await r.json();
+      const a = d.ambulance;
+
+      document.getElementById("amb-details").innerHTML = `
+        <div class="amb-item">
+          <div class="amb-label">UNIT ID</div>
+          <div class="amb-value">${a.ambulance_id || "—"}</div>
+        </div>
+        <div class="amb-item">
+          <div class="amb-label">STATUS</div>
+          <div class="amb-value ${a.status === 'active' ? 'active-status' : 'inactive-status'}">
+            ${a.status?.toUpperCase() || "INACTIVE"}
+          </div>
+        </div>
+        <div class="amb-item">
+          <div class="amb-label">LATITUDE</div>
+          <div class="amb-value">${a.lat || "—"}</div>
+        </div>
+        <div class="amb-item">
+          <div class="amb-label">LONGITUDE</div>
+          <div class="amb-value">${a.lon || "—"}</div>
+        </div>
+        <div class="amb-item">
+          <div class="amb-label">LAST SEEN</div>
+          <div class="amb-value">${a.last_seen ? a.last_seen.split('T')[1].split('.')[0] : "—"}</div>
+        </div>
+        <div class="amb-item">
+          <div class="amb-label">ACTIVE GREENS</div>
+          <div class="amb-value LOW">${d.active_greens}</div>
+        </div>
+      `;
+
+      const route = a.current_route || [];
+      document.getElementById("route-display").textContent =
+        route.length > 0 ? "ROUTE: " + route.join(" → ") : "";
+
+    } catch(e) {
+      document.getElementById("amb-details").innerHTML =
+        '<span class="error">Flask server not running — start app.py first</span>';
+    }
+  }
+
+  // Load traffic signals
+  async function loadTraffic() {
+    try {
+      const r = await fetch(`${BASE}/traffic`);
+      const d = await r.json();
+      const signals = d.signals;
+
+      let html = "";
+      for (const [id, sig] of Object.entries(signals)) {
+        const dot = sig.is_green
+          ? '<span class="green-dot"></span>'
+          : '<span class="gray-dot"></span>';
+        html += `
+          <div class="card">
+            <div class="signal-name">${dot}${id}</div>
+            <div class="signal-count ${sig.congestion}">${sig.vehicle_count}</div>
+            <div class="signal-label ${sig.congestion}">${sig.congestion} TRAFFIC</div>
+            <div style="font-size:10px;color:#3a4f6e;margin-top:6px">
+              ${sig.lat}, ${sig.lon}
+            </div>
+          </div>`;
+      }
+      document.getElementById("signals-grid").innerHTML = html;
+    } catch(e) {
+      document.getElementById("signals-grid").innerHTML =
+        '<span class="error">Cannot load traffic data</span>';
+    }
+  }
+
+  // Simulate ambulance ACTIVE
+  async function sendActive() {
+    try {
+      const r = await fetch(`${BASE}/ambulance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ambulance_id: "AMB001",
+          lat: 28.6139,
+          lon: 77.2090,
+          status: "active"
+        })
+      });
+      const d = await r.json();
+      const route = d.route || [];
+      showMsg("✓ Ambulance ACTIVE | Route: " + route.join(" → "), true);
+      loadStatus();
+      loadTraffic();
+    } catch(e) {
+      showMsg("✗ Flask not running — start app.py first", false);
+    }
+  }
+
+  // Simulate ambulance INACTIVE
+  async function sendInactive() {
+    try {
+      await fetch(`${BASE}/ambulance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ambulance_id: "AMB001",
+          lat: 28.6139,
+          lon: 77.2090,
+          status: "inactive"
+        })
+      });
+      showMsg("✓ Ambulance set to INACTIVE", true);
+      loadStatus();
+    } catch(e) {
+      showMsg("✗ Flask not running", false);
+    }
+  }
+
+  // Compute route
+  async function computeRoute() {
+    try {
+      const r = await fetch(`${BASE}/route`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          start: "HOSPITAL",
+          end: "DEST",
+          clear_signals: false
+        })
+      });
+      const d = await r.json();
+      showMsg("✓ Route: " + d.route.join(" → ") + " | Cost: " + d.route_cost, true);
+    } catch(e) {
+      showMsg("✗ Flask not running", false);
+    }
+  }
+
+  function showMsg(text, ok) {
+    const el = document.getElementById("msg");
+    el.textContent = text;
+    el.className = ok ? "success" : "error";
+  }
+
+  // Auto load on start
+  loadStatus();
+  loadTraffic();
+
+  // Auto refresh every 3 seconds
+  setInterval(() => {
+    loadStatus();
+    loadTraffic();
+  }, 3000);
+</script>
+
+</body>
+</html>

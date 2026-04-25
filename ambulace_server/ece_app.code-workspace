@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../ambulace_yolo"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../flutter_application_1"
+		}
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "ambulace_server"
+	}
+}

@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+
+# Flutter (ignore)
+flutter_application_1/
+
+# YOLO dataset (IMPORTANT)
+ambulace_yolo/
+
+# VS Code
+.vscode/
