@@ -1,0 +1,37 @@
+name: smart_ambulance
+description: Smart Ambulance v3 — Hybrid GPS + AI Traffic Control (OSM Version)
+publish_to: 'none'
+version: 3.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 🗺️ MAP (OpenStreetMap stack — no Google Maps)
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+
+  # 📍 GPS location
+  location: ^5.0.3
+
+  # 🌐 HTTP API calls (Nominatim, OSRM, Flask backend)
+  http: ^1.2.1
+
+  # 🔗 External navigation (Google Maps / browser fallback)
+  url_launcher: ^6.2.6
+
+  # 💾 Local storage (driver info, prefs)
+  shared_preferences: ^2.2.2
+
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ios/Runner/Info.plist — merge these keys into your existing Info.plist -->
+<plist version="1.0">
+<dict>
+    <!-- ── Required location usage descriptions ──────────────────────── -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Smart Ambulance needs your location to track the ambulance and provide navigation.</string>
+
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Smart Ambulance needs background location to transmit V2X signals while navigating.</string>
+
+    <key>NSLocationAlwaysUsageDescription</key>
+    <string>Smart Ambulance needs background location for continuous ambulance tracking.</string>
+
+    <!-- ── URL schemes for Google Maps ──────────────────────────────── -->
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>comgooglemaps</string>
+        <string>googlemaps</string>
+        <string>google.navigation</string>
+    </array>
+
+    <!-- ── Google Maps SDK ───────────────────────────────────────────── -->
+    <key>GMSApiKey</key>
+    <string>YOUR_GOOGLE_MAPS_API_KEY</string>
+
+    <!-- ── App Transport Security (allow HTTP to local server) ────────── -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+
+    <!-- ── Background modes for location ────────────────────────────── -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>location</string>
+        <string>fetch</string>
+    </array>
+</dict>
+</plist>
