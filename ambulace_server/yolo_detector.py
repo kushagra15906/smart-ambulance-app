@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 # ── Model Paths ───────────────────────────────────────────────────────────────
 
 VEHICLE_MODEL_PATH   = "yolov8n.pt"          # pretrained — auto-downloaded
-AMBULANCE_MODEL_PATH = "runs/train/ambulance_detector/weights/best.pt"
+AMBULANCE_MODEL_PATH = "ambulance.pt"
 
 # ── YOLO Classes we care about in vehicle model ───────────────────────────────
 # COCO class IDs: car=2, motorcycle=3, bus=5, truck=7
