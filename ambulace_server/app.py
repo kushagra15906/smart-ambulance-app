@@ -51,7 +51,7 @@ def get_camera_manager():
         try:
             from camera_pipeline import MultiCameraManager
             from ml_predictor import TrafficHistoryManager
-            history = TrafficHistoryManager()
+            history = TrafficHistoryManager(signal_ids=list(SIGNALS.keys()))
             _camera_manager = MultiCameraManager(
                 signal_configs=[{"signal_id": "S1", "source": 0}],
                 history_manager=history,
@@ -537,17 +537,6 @@ def mjpeg_stream():
     return Response(_generate(),
                     mimetype="multipart/x-mixed-replace; boundary=frame")
 
-
-@app.route("/stream-snapshot")
-def stream_snapshot():
-    """Single JPEG frame — works on Render (no persistent connection needed)."""
-    with _stream_lock:
-        frame = _latest_jpeg
-    if frame is None:
-        return jsonify({"error": "No frame yet — ESP32-CAM not connected"}), 503
-    from flask import Response
-    return Response(frame, mimetype="image/jpeg",
-                    headers={"Cache-Control": "no-cache, no-store"})
 
 # ── GET /stream-status ────────────────────────────────────────────────────────
 @app.route("/stream-status")
