@@ -13,7 +13,7 @@ ultralytics          # YOLOv8 (auto-installs torch, torchvision)
 opencv-python        # OpenCV for camera capture
 
 # ── Machine Learning ─────────────────────────────────────────────────────────
-scikit-learn         # Random Forest, Linear Regression, pipelines
+scikit-learn==1.7.2       # Random Forest, Linear Regression, pipelines
 numpy                # Array operations
 
 # ── Optional (for faster inference) ──────────────────────────────────────────
