@@ -1,0 +1,494 @@
+/*
+ * ============================================================
+ *  ESP32-CAM — Smart Ambulance Traffic System
+ *  Camera Model : RHYX M21-45  (PIXFORMAT_GRAYSCALE, no JPEG)
+ *
+ *  ── FIXES FROM PREVIOUS VERSION ─────────────────────────────
+ *  1. URL fixed:  10.240.76.195.5000  →  10.240.76.195:5000
+ *  2. Endpoint changed: /detect → /stream-frame
+ *     (matches your updated backend which has YOLO + stream)
+ *  3. Added X-Frame-No header (required by /stream-frame)
+ *  4. Added X-Stream-Mode header
+ *  5. WiFiClientSecure added for HTTPS Render support
+ *
+ *  ── HOW IT WORKS ─────────────────────────────────────────────
+ *
+ *   [ESP32-CAM]
+ *       │  POST /stream-frame  (every 3 seconds)
+ *       │  Headers:
+ *       │    X-Signal-ID    : S1
+ *       │    X-Ambulance-ID : CAM_S1
+ *       │    X-Width        : 160
+ *       │    X-Height       : 120
+ *       │    X-Frame-No     : <counter>
+ *       │    X-Stream-Mode  : 0
+ *       │  Body: 19200 raw grayscale bytes
+ *       ▼
+ *   [Flask backend — ambulance_server/app.py]
+ *       │  camera_manager.ingest_frame()
+ *       │  → YOLO runs every 5th frame (background thread)
+ *       │  → JPEG stored for GET /stream
+ *       │  → if ambulance detected → _send_esp32("S1","GREEN")
+ *       ▼
+ *   [Traffic ESP32]
+ *       │  GET /signal → "GREEN" or "RED"
+ *       ▼
+ *   [Traffic lights change]
+ *
+ *  ── STREAM URL ───────────────────────────────────────────────
+ *  Open in browser to see live camera feed:
+ *    http://10.240.76.195:5000/stream
+ *    http://10.240.76.195:5000/stream?id=S1
+ *
+ *  ── PIN LAYOUT (AI-Thinker / RHYX M21-45) ───────────────────
+ *  GPIO 0  → pull LOW during upload, release to run
+ *  Use 5V 2A power — USB causes brownout on camera init
+ *
+ *  ── ARDUINO IDE SETTINGS ─────────────────────────────────────
+ *  Board           : AI Thinker ESP32-CAM
+ *  Partition Scheme: Huge APP (3MB No OTA)
+ *  CPU Frequency   : 240 MHz
+ *  Upload Speed    : 115200
+ *
+ *  ── LIBRARIES (bundled with ESP32 Arduino core) ──────────────
+ *  esp_camera.h  |  WiFi.h  |  HTTPClient.h  |  WiFiClientSecure.h
+ * ============================================================
+ */
+
+#include "esp_camera.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+
+// ─────────────────────────────────────────────
+//  ★ ONLY EDIT THESE  ← nothing else needs changing
+// ─────────────────────────────────────────────
+
+// WiFi credentials
+const char* WIFI_SSID     = "ESP_TEST";
+const char* WIFI_PASSWORD = "12345678";
+
+// Flask backend base URL
+// LOCAL  (Flask running on your laptop): use http://
+// RENDER (deployed):                     use https://
+const char* BACKEND_HOST = "http://10.240.76.195:5000";
+//                                               ↑
+//                                    colon — NOT a dot
+
+// Which intersection this camera covers
+// Must match a key in SIGNALS dict in your backend: S1–S6
+const char* SIGNAL_ID = "S1";
+
+// Unique camera identifier — appears in db.log_detection()
+const char* CAMERA_ID = "CAM_S1";
+
+// How often to capture and send (milliseconds)
+// 3000 = every 3 seconds  |  500 = ~2 fps  |  150 = ~7 fps (stream mode)
+const unsigned long CAPTURE_INTERVAL_MS = 3000;
+
+// ─────────────────────────────────────────────
+//  CAMERA PINS — AI-Thinker / RHYX M21-45
+//  Do NOT change unless your module is different
+// ─────────────────────────────────────────────
+#define CAM_PIN_PWDN     32
+#define CAM_PIN_RESET    -1
+#define CAM_PIN_XCLK      0
+#define CAM_PIN_SIOD     26
+#define CAM_PIN_SIOC     27
+#define CAM_PIN_D7       35
+#define CAM_PIN_D6       34
+#define CAM_PIN_D5       39
+#define CAM_PIN_D4       38
+#define CAM_PIN_D3       21
+#define CAM_PIN_D2       19
+#define CAM_PIN_D1       18
+#define CAM_PIN_D0        5
+#define CAM_PIN_VSYNC    25
+#define CAM_PIN_HREF     23
+#define CAM_PIN_PCLK     22
+#define LED_PIN          33   // active LOW on AI-Thinker board
+
+// ─────────────────────────────────────────────
+//  RUNTIME STATE
+// ─────────────────────────────────────────────
+bool          camReady      = false;
+unsigned long lastCaptureMs = 0;
+unsigned long frameCount    = 0;   // total frames captured
+int           totalSent     = 0;   // frames successfully sent
+int           totalDetected = 0;   // ambulance detections
+String        lastSignal    = "---";
+String        lastAction    = "---";
+
+// Build full endpoint URLs once at startup
+char URL_STREAM_FRAME[128];   // POST /stream-frame
+
+// ═══════════════════════════════════════════════════
+//  SETUP
+// ═══════════════════════════════════════════════════
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);  // LED off (active LOW)
+
+  // Build URLs
+  snprintf(URL_STREAM_FRAME, sizeof(URL_STREAM_FRAME),
+           "%s/stream-frame", BACKEND_HOST);
+
+  Serial.println("\n============================================");
+  Serial.println("  ESP32-CAM  →  Smart Ambulance Backend");
+  Serial.printf ("  WiFi       : %s\n",        WIFI_SSID);
+  Serial.printf ("  Signal ID  : %s\n",        SIGNAL_ID);
+  Serial.printf ("  Endpoint   : %s\n",        URL_STREAM_FRAME);
+  Serial.printf ("  Interval   : %lu ms\n",    CAPTURE_INTERVAL_MS);
+  Serial.printf ("  Stream URL : %s/stream\n", BACKEND_HOST);
+  Serial.println("============================================\n");
+
+  // Initialise camera
+  camReady = initCamera();
+  if (!camReady) {
+    Serial.println("[FATAL] Camera init failed.");
+    Serial.println("[FATAL] Check: 5V supply, ribbon cable, GPIO 0 = HIGH");
+    // Rapid blink forever = hardware error signal
+    while (true) {
+      digitalWrite(LED_PIN, LOW);  delay(100);
+      digitalWrite(LED_PIN, HIGH); delay(100);
+    }
+  }
+
+  connectWiFi();
+  Serial.println("[BOOT] Ready — waiting for first capture...\n");
+}
+
+// ═══════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════
+void loop() {
+  unsigned long now = millis();
+
+  // WiFi watchdog — reconnect if dropped
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WIFI] Connection lost — reconnecting...");
+    connectWiFi();
+    return;
+  }
+
+  // Capture + send on interval
+  if (now - lastCaptureMs >= CAPTURE_INTERVAL_MS) {
+    lastCaptureMs = now;
+    captureAndSend();
+  }
+
+  delay(10);
+}
+
+// ─────────────────────────────────────────────
+//  CAMERA INITIALISATION
+//  GRAYSCALE + QQVGA (160×120) = 19200 bytes/frame
+//  One frame buffer saves RAM
+// ─────────────────────────────────────────────
+bool initCamera() {
+  Serial.println("[CAM] Initialising...");
+
+  camera_config_t cfg;
+  cfg.ledc_channel = LEDC_CHANNEL_0;
+  cfg.ledc_timer   = LEDC_TIMER_0;
+  cfg.pin_d0       = CAM_PIN_D0;
+  cfg.pin_d1       = CAM_PIN_D1;
+  cfg.pin_d2       = CAM_PIN_D2;
+  cfg.pin_d3       = CAM_PIN_D3;
+  cfg.pin_d4       = CAM_PIN_D4;
+  cfg.pin_d5       = CAM_PIN_D5;
+  cfg.pin_d6       = CAM_PIN_D6;
+  cfg.pin_d7       = CAM_PIN_D7;
+  cfg.pin_xclk     = CAM_PIN_XCLK;
+  cfg.pin_pclk     = CAM_PIN_PCLK;
+  cfg.pin_vsync    = CAM_PIN_VSYNC;
+  cfg.pin_href     = CAM_PIN_HREF;
+  cfg.pin_sscb_sda = CAM_PIN_SIOD;
+  cfg.pin_sscb_scl = CAM_PIN_SIOC;
+  cfg.pin_pwdn     = CAM_PIN_PWDN;
+  cfg.pin_reset    = CAM_PIN_RESET;
+  cfg.xclk_freq_hz = 20000000;            // 20 MHz clock
+
+  cfg.pixel_format = PIXFORMAT_GRAYSCALE; // RHYX M21-45: no JPEG support
+  cfg.frame_size = FRAMESIZE_QQVGA;  // best for speed     // 160 × 120
+  cfg.jpeg_quality = 0;                   // unused in GRAYSCALE mode
+  cfg.fb_count     = 1;                   // 1 buffer — saves ~19 KB RAM
+  cfg.grab_mode    = CAMERA_GRAB_LATEST;  // always get freshest frame
+
+  esp_err_t err = esp_camera_init(&cfg);
+  if (err != ESP_OK) {
+    Serial.printf("[CAM] FAILED — esp_err=0x%x\n", err);
+    Serial.println("[CAM] Common causes:");
+    Serial.println("[CAM]   • Insufficient power (need 5V 2A)");
+    Serial.println("[CAM]   • GPIO 0 still pulled LOW");
+    Serial.println("[CAM]   • Loose ribbon cable");
+    return false;
+  }
+
+  // Tune sensor for road/outdoor use
+  sensor_t* s = esp_camera_sensor_get();
+  if (s) {
+    s->set_brightness(s,  1);    // +1 brightness
+    s->set_contrast(s,    2);    // +2 contrast (helps detect bright lights)
+    s->set_saturation(s,  0);    // neutral (grayscale anyway)
+    s->set_exposure_ctrl(s, 1);  // auto exposure ON
+    s->set_gain_ctrl(s,   1);    // auto gain ON
+    s->set_whitebal(s,    1);    // auto white balance ON
+    s->set_aec2(s,        1);    // improved auto exposure
+  }
+
+  Serial.println("[CAM] OK — GRAYSCALE 160×120");
+  return true;
+}
+
+// ─────────────────────────────────────────────
+//  WIFI CONNECTION
+// ─────────────────────────────────────────────
+void connectWiFi() {
+  Serial.printf("[WIFI] Connecting to \"%s\"", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 20) {
+    delay(500);
+    Serial.print(".");
+    tries++;
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("[WIFI] Connected — IP: %s  RSSI: %d dBm\n",
+                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  } else {
+    Serial.println("[WIFI] FAILED — will retry on next loop");
+  }
+}
+
+// ─────────────────────────────────────────────
+//  CAPTURE FRAME AND SEND
+// ─────────────────────────────────────────────
+void captureAndSend() {
+  frameCount++;
+  Serial.printf("\n[FRAME #%lu] Capturing...\n", frameCount);
+
+  // Discard one stale buffer frame (sensor needs to settle)
+  camera_fb_t* warmup = esp_camera_fb_get();
+  if (warmup) esp_camera_fb_return(warmup);
+
+  // Capture fresh frame
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("[CAM] Frame capture failed — skipping");
+    return;
+  }
+
+  // Validate format
+  if (fb->format != PIXFORMAT_GRAYSCALE) {
+    Serial.printf("[CAM] Wrong format: %d — skipping\n", fb->format);
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  Serial.printf("[CAM] Frame OK — %u bytes (%d×%d)\n",
+                fb->len, fb->width, fb->height);
+
+  // Send to backend
+  if (WiFi.status() == WL_CONNECTED) {
+    String response = postFrame(fb->buf, fb->len, fb->width, fb->height);
+    handleResponse(response);
+    totalSent++;
+  } else {
+    Serial.println("[SEND] Skipped — no WiFi");
+  }
+
+  // Return buffer immediately — frees ~19 KB back to heap
+  esp_camera_fb_return(fb);
+}
+
+// ─────────────────────────────────────────────
+//  HTTP POST RAW FRAME → /stream-frame
+//
+//  Headers sent to backend:
+//    Content-Type   : application/octet-stream
+//    X-Signal-ID    : S1          ← which intersection
+//    X-Ambulance-ID : CAM_S1      ← camera identifier
+//    X-Width        : 160         ← frame width
+//    X-Height       : 120         ← frame height
+//    X-Frame-No     : <number>    ← frame counter
+//    X-Stream-Mode  : 0           ← 0=detect, 1=stream
+//    X-Format       : GRAYSCALE
+//
+//  Body: raw uint8 bytes (160 × 120 = 19200 bytes)
+//
+//  Backend response JSON:
+//    {"received":true, "detected":false, "confidence":0.0,
+//     "signal":"RED", "action_taken":"NONE", "frame_no":42}
+// ─────────────────────────────────────────────
+String postFrame(uint8_t* buf, size_t len, int w, int h) {
+  const int MAX_RETRIES = 2;
+  const int TIMEOUT_MS  = 6000;
+
+  for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    Serial.printf("[HTTP] Attempt %d/%d — %u bytes → %s\n",
+                  attempt, MAX_RETRIES, len, URL_STREAM_FRAME);
+
+    
+
+
+    HTTPClient http;
+    http.begin(URL_STREAM_FRAME);
+    http.setTimeout(TIMEOUT_MS);
+
+    // ── Headers ────────────────────────────────────────────────
+    http.addHeader("Content-Type",   "application/octet-stream");
+    http.addHeader("X-Signal-ID",    SIGNAL_ID);
+    http.addHeader("X-Ambulance-ID", CAMERA_ID);
+    http.addHeader("X-Width",        String(w));
+    http.addHeader("X-Height",       String(h));
+    http.addHeader("X-Frame-No",     String(frameCount));
+    http.addHeader("X-Stream-Mode",  "0");   // 0 = detect mode, 1 = stream mode
+    http.addHeader("X-Format",       "GRAYSCALE");
+
+    // ── POST raw bytes ──────────────────────────────────────────
+    int code = http.POST(buf, len);
+
+    if (code == 200) {
+      String response = http.getString();
+      http.end();
+      Serial.printf("[HTTP] 200 OK — %s\n", response.c_str());
+      return response;
+
+    } else if (code > 0) {
+      // Server responded with non-200 status
+      String body = http.getString();
+      http.end();
+      Serial.printf("[HTTP] Error %d — %s\n", code, body.c_str());
+      if (attempt < MAX_RETRIES) delay(1000);
+
+    } else {
+      // Connection-level error (code is negative)
+      http.end();
+      Serial.printf("[HTTP] Connection error: %d\n", code);
+
+      if (code == HTTPC_ERROR_CONNECTION_REFUSED) {
+        Serial.println("[HTTP] → Flask not running? Check backend is started.");
+      } else if (code == HTTPC_ERROR_CONNECTION_LOST) {
+        Serial.println("[HTTP] → WiFi dropped mid-request.");
+      }
+
+      if (attempt < MAX_RETRIES) {
+        Serial.println("[HTTP] Retrying in 2 s...");
+        delay(2000);
+      }
+    }
+  }
+
+  Serial.println("[HTTP] All retries failed");
+  return "{\"error\":\"all retries failed\"}";
+}
+
+// ─────────────────────────────────────────────
+//  HANDLE BACKEND RESPONSE
+//
+//  Parses JSON response from /stream-frame:
+//    {"received":true, "detected":false/true,
+//     "confidence":0.82, "signal":"GREEN"/"RED",
+//     "action_taken":"NONE"/"GREEN"/"GREEN+STOP_CROSSING"/"RESET"}
+//
+//  Controls LED:
+//    3 fast blinks = ambulance detected
+//    1 short blink = normal frame, no detection
+// ─────────────────────────────────────────────
+void handleResponse(const String& json) {
+  // Parse key fields using simple string search
+  bool   detected = json.indexOf("\"detected\":true")  >= 0;
+  bool   isGreen  = json.indexOf("\"signal\":\"GREEN\"") >= 0;
+
+  // Extract action_taken value
+  String action = "NONE";
+  int idx = json.indexOf("\"action_taken\":\"");
+  if (idx >= 0) {
+    int start = idx + 16;
+    int end   = json.indexOf("\"", start);
+    if (end > start) action = json.substring(start, end);
+  }
+
+  lastSignal = isGreen ? "GREEN" : "RED";
+  lastAction = action;
+
+  if (detected) {
+    totalDetected++;
+    // 3 fast blinks = ambulance detected
+    for (int i = 0; i < 3; i++) {
+      digitalWrite(LED_PIN, LOW);  delay(80);
+      digitalWrite(LED_PIN, HIGH); delay(80);
+    }
+    Serial.println("[RESULT] 🚨 AMBULANCE DETECTED");
+    Serial.printf ("[RESULT] Action: %s\n", action.c_str());
+  } else {
+    // 1 short blink = heartbeat, no detection
+    digitalWrite(LED_PIN, LOW);  delay(30);
+    digitalWrite(LED_PIN, HIGH);
+    Serial.println("[RESULT] No ambulance");
+  }
+
+  Serial.printf("[STATS]  Frames:%lu  Sent:%d  Detected:%d  Signal:%s\n",
+                frameCount, totalSent + 1, totalDetected, lastSignal.c_str());
+}
+
+/*
+ * ============================================================
+ *  UPLOAD STEPS FOR ESP32-CAM
+ * ============================================================
+ *
+ *  1. Connect GPIO 0 → GND  (puts board into upload mode)
+ *  2. Press RESET button on the board
+ *  3. Click Upload in Arduino IDE
+ *  4. Wait for: "Hard resetting via RTS pin..."
+ *  5. Disconnect GPIO 0 from GND
+ *  6. Press RESET again  (normal run mode)
+ *  7. Open Serial Monitor at 115200 baud
+ *
+ * ============================================================
+ *  LED BLINK CODES
+ * ============================================================
+ *
+ *  Rapid blink forever  →  Camera init failed (hardware error)
+ *  3 fast blinks        →  Ambulance DETECTED by backend YOLO
+ *  1 short blink        →  Normal frame sent, no detection
+ *
+ * ============================================================
+ *  SWITCHING TO RENDER (HTTPS) DEPLOYMENT
+ * ============================================================
+ *
+ *  1. Change BACKEND_HOST to your Render URL:
+ *       const char* BACKEND_HOST = "https://smart-ambulance-backend-u1ic.onrender.com";
+ *
+ *  2. In postFrame(), uncomment the WiFiClientSecure lines:
+ *       WiFiClientSecure client;
+ *       client.setInsecure();
+ *       http.begin(client, URL_STREAM_FRAME);
+ *
+ *  3. Comment out the plain http.begin() line:
+ *       // http.begin(URL_STREAM_FRAME);
+ *
+ * ============================================================
+ *  IF YOU SEE "Connection error: -1" IN SERIAL MONITOR
+ * ============================================================
+ *
+ *  Most common causes:
+ *    → Flask server not running on your laptop
+ *    → Wrong IP address in BACKEND_HOST
+ *    → ESP32 and laptop on different WiFi networks
+ *    → Firewall blocking port 5000
+ *
+ *  Fix: run  ipconfig  (Windows) or  ifconfig  (Mac/Linux)
+ *  and copy your laptop's WiFi IP address into BACKEND_HOST.
+ *
+ * ============================================================
+ */
